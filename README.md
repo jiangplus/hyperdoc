@@ -12,17 +12,17 @@ It inherits most functionalities from [the Dat client](https://github.com/datpro
 
 Create your blog:
 
-> dx create --type=blog
+> hyperdoc create --type=blog
 
 Edit the blog post in the `_posts` directory with markdown format with name like `_posts/2018-01-01-first-blog.md`
 
 Generate index.json for the blog:
 
-> dx index
+> hyperdoc index
 
 Serve the blog:
 
-> dx serve
+> hyperdoc serve
 
 Then open `http://localhost:3300/` to see the blog.
 
@@ -30,13 +30,13 @@ Then open `http://localhost:3300/` to see the blog.
 
 Create your doc app:
 
-> dx create --type=doc
+> hyperdoc create --type=doc
 
 Just edit any markdowns in the repository, and `README.md` would be the home page.
 
 Serve the doc:
 
-> dx serve
+> hyperdoc serve
 
 Then open `http://localhost:3300/` to see it.
 
