@@ -1,0 +1,862 @@
+#!/usr/bin/env node
+
+const yargs = require('yargs');
+const util = require('util')
+const express = require('express')
+const http = require('http')
+const fs = require('fs')
+const path = require('path')
+const xtend = require('xtend')
+const Dat = require('dat-node')
+
+
+const DatJson = require('dat-json')
+const datlog = require('dat-log')
+const encoding = require('dat-encoding')
+const doctor = require('dat-doctor')
+const DatRegistry = require('../dat-registry')
+
+const prompt = require('prompt')
+const chalk = require('chalk')
+const yaml = require('js-yaml')
+
+function exitInvalidNode () {
+  console.error('Node Version:', process.version)
+  console.error('Unfortunately, we only support Node >= v8. Please upgrade to use Dat.')
+  console.error('You can find the latest version at https://nodejs.org/')
+  process.exit(1)
+}
+
+let baseurl = 'https://datbase.org'
+
+// Check node version to make sure we support
+let NODE_VERSION_SUPPORTED = 8
+let nodeMajorVer = process.version.match(/^v([0-9]+)\./)[1]
+let invalidNode = nodeMajorVer < NODE_VERSION_SUPPORTED
+if (invalidNode) exitInvalidNode()
+
+process.title = 'hyperdoc'
+const dir = process.cwd()
+
+
+function selectiveSync (opts) {
+  // selective sync stuff
+  var parsing = opts.selectFromFile !== '.datdownload' ? opts.selectFromFile : path.join(opts.dir, '.datdownload')
+  opts.selectedFiles = parseFiles(parsing)
+  if (opts.select && typeof opts.select === 'string') opts.selectedFiles = opts.select.split(',')
+  if (opts.selectedFiles) {
+    opts.sparse = true
+  }
+}
+
+function parseFiles (input) {
+  var parsed = null
+
+  try {
+    if (fs.statSync(input).isFile()) {
+      parsed = fs.readFileSync(input).toString().trim().split(/\r?\n/)
+    }
+  } catch (err) {
+    if (err && !err.name === 'ENOENT') {
+      console.error(err)
+      process.exit(1)
+    }
+  }
+
+  return parsed
+}
+
+function generateMetadata (cb) {
+  fs.readdir(path.join(process.cwd(), '_posts'), function(err, items) {
+    if (err) throw err
+
+    let posts = items.map((key) => {
+      let filename = path.join(path.join(process.cwd(), '_posts', key))
+      let content = fs.readFileSync(filename, 'utf8')
+      let meta = yaml.load(content.split('---')[1])
+      let line = {title: meta.title, date: new Date(meta.date).toDateString(), key: key.replace(/\.[^/.]+$/, "")}
+      return line
+    })
+
+    let json = {posts: posts}
+    fs.writeFileSync(path.join(process.cwd(), 'index.json'), JSON.stringify(json), 'utf8')
+    if (cb) cb(json)
+
+    console.log('successfully generated')
+  })
+}
+
+function serveDoc (argv) {   
+  const app = express();
+
+  let options = {
+    dotfiles: 'ignore',
+    etag: false,
+    extensions: ['htm', 'html'],
+    index: false,
+    maxAge: '1d',
+    redirect: false,
+  }
+
+  app.use(express.static(path.join(__dirname, '..', 'public', 'doc'), options))
+  app.use(express.static(process.cwd(), options))
+
+  app.get('*', function (req, res, next) {
+    res.sendFile(path.join(__dirname, '..', 'public', 'doc', 'index.html'), function (err) {
+      if (err) {
+        next(err)
+      }
+    })
+  })
+
+  let port = argv.port || 3300
+  http.createServer(app).listen(port);
+  console.log('Listening on http://localhost:' + 3300)
+}
+
+function serveBlog (argv) {
+  const app = express();
+
+  let options = {
+    dotfiles: 'ignore',
+    etag: false,
+    extensions: ['htm', 'html'],
+    index: false,
+    maxAge: '1d',
+    redirect: false,
+  }
+
+  app.use(express.static(path.join(__dirname, '..', 'public', 'blog'), options))
+  app.use(express.static(process.cwd(), options))
+
+  app.get('*', function (req, res, next) {
+    res.sendFile(path.join(__dirname, '..', 'public', 'blog', 'index.html'), function (err) {
+      if (err) {
+        next(err)
+      }
+    })
+  })
+
+  generateMetadata()
+  let port = argv.port || 3300
+  http.createServer(app).listen(port)
+  console.log('Listening on http://localhost:' + port)
+}
+
+let argv = yargs
+  .usage('usage: hyperdoc <command> <key>')
+  .command({
+    command: 'create',
+    builder: function (yargs) {
+      return yargs.option('t', {
+        alias: 'type',
+        describe: 'project type: blog | doc'
+      })
+    },
+    handler: function (argv) {
+      Dat(dir, {errorIfExists: true}, function (err, dat) {
+        if (err && err.name === 'ExistsError') return console.error('\nArchive already exists.\nYou can use `dat sync` to update.')
+        if (err) throw err
+
+
+        var datjson = DatJson(dat.archive, { file: path.join(dir, 'dat.json') })
+        fs.readFile(path.join(dir, 'dat.json'), 'utf-8', function (err, data) {
+          if (err || !data) return doPrompt()
+          data = JSON.parse(data)
+          console.log('read existing dat.json data', data)
+          doPrompt(data)
+        })
+
+        function doPrompt (data) {
+          if (!data) data = {}
+
+          var schema = {
+            properties: {
+              title: {
+                description: chalk.magenta('Title'),
+                default: data.title || '',
+                // pattern: /^[a-zA-Z\s\-]+$/,
+                // message: 'Name must be only letters, spaces, or dashes',
+                required: false
+              },
+              description: {
+                description: chalk.magenta('Description'),
+                default: data.description || ''
+              }
+            }
+          }
+
+          prompt.override = { title: '', description: '' }
+          prompt.message = ''
+          prompt.start()
+          prompt.get(schema, writeDatJson)
+
+          function writeDatJson (err, results) {
+            if (err) return exitErr(err) // prompt error
+            if (!results.title && !results.description) return done()
+            if (argv.type === 'blog' || argv.type === 'doc') {
+              results.type = argv.type
+            }
+            if (argv.type === 'blog') {
+              results.links = [{"name": "Posts" , "url": "/" , "external": true}]
+            }
+            datjson.create(results, done)
+          }
+        }
+
+        function done () {
+          var content
+          if (argv.type === 'doc') {
+            content = `
+# Headline
+
+> An awesome project.
+            `
+            var file = 'README.md'
+            if (!fs.existsSync(file)) {
+                fs.writeFileSync(file, content)
+            }
+          }
+
+          if (argv.type === 'blog') {
+            content = "index.json\n"
+            var file = '.datignore'
+            if (!fs.existsSync(file)) {
+                fs.writeFileSync(file, content)
+            }
+            if (!fs.existsSync('_posts')) {
+                fs.mkdirSync('_posts')
+            }
+          }
+
+          console.log('hyperdoc created successfully! Link: dat://' + dat.key.toString('hex'))
+        
+          dat.importFiles(function (err) {
+            if (err) throw err
+
+            dat.archive.readdir('/', function (err, list) {
+              if (err) throw err
+              console.log('files:')
+              console.log(list)
+            })
+          })
+        }
+
+      })
+    }
+  })
+  .command({
+    command: 'clone <key>',
+    handler: function (argv) {
+
+      createDir(argv.key, runDat)
+
+      function createDir (key, cb) {
+        console.log('Checking directory for clone')
+        // Create the directory if it doesn't exist
+        // If no dir is specified, we put dat in a dir with name = key
+        fs.access(key, fs.F_OK, function (err) {
+          if (!err) {
+            createdDirectory = false
+            return cb()
+          }
+          console.log('No existing directory, creating it.')
+          createdDirectory = true
+          fs.mkdir(key, cb)
+        })
+      }
+
+      function runDat () {
+        Dat(argv.key, argv, function (err, dat) {
+          if (err && err.name === 'ExistsError') return console.error('exit:warn', 'Existing archive in this directory. Use pull or sync to update.')
+          if (err) {
+            if (createdDirectory) rimraf.sync(dat.path)
+            return console.error('exit:error', err)
+          }
+          if (dat.writable) return console.error('exit:warn', 'Archive is writable. Cannot clone your own archive =).')
+
+          console.log("start cloning")
+          dat.joinNetwork(function (err) {
+            if (err) throw err
+        
+            if (!dat.network.connected || !dat.network.connecting) {
+              console.error('No users currently online for that key.')
+              process.exit(1)
+            }
+          })
+        })
+      }
+    }
+  })
+  .command({
+    command: 'sync',
+    builder: function (yargs) {
+      return yargs.option('import', {
+        default: true,
+        describe: 'Import files from the directory to the database (Dat Writable).'
+      }).option('ignoreHidden', {
+        default: true,
+      }).option('selectFromFile', {
+        default: false,
+        describe: 'Sync only the list of selected files or directories in the given file.'
+      }).option('select', {
+        default: false,
+        describe: 'Sync only the list of selected files or directories.'
+      }).option('watch', {
+        default: false,
+        describe: 'Watch for changes and import updated files (Dat Writable).'
+      })
+    },
+    handler: function (opts) {
+      opts.createIfMissing = false // sync must always be a resumed archive
+      opts.dir = dir
+      console.log(opts)
+      // selectiveSync(opts)
+
+      Dat(dir, opts, function (err, dat) {
+        if (err && err.name === 'MissingError') return console.error('exit:warn', 'No existing archive in this directory.')
+        if (err) return console.error('exit:error', err)
+
+        dat.joinNetwork(function (err) {
+          console.log('hyperdoc syncing: dat://' + dat.key.toString('hex'))
+          
+          dat.archive.readdir('/', {cached: true}, function (err, content) {
+            console.log(content) 
+          })
+        })
+      })
+    }
+  })
+  .command({
+    command: 'serve',
+    builder: function (yargs) {
+      return yargs.option('p', {
+        alias: 'port',
+        describe: 'http server binding port'
+      })
+    },
+    handler: function (argv) {
+      Dat(dir, function (err, dat) {
+        if (err) throw err
+        dat.joinNetwork()
+        console.log('hyperdoc syncing: dat://' + dat.key.toString('hex'))
+      })
+     
+      var datjson = JSON.parse(fs.readFileSync('dat.json', 'utf8'))
+      console.log(datjson)
+      if (datjson.type === 'blog') {
+        serveBlog(argv)
+      } else if (datjson.type === 'doc') {
+        serveDoc(argv)
+      } else {
+        console.log('application type no found')
+      }
+    
+    }
+  })
+  .command({
+    command: 'indexing',
+    builder: function (yargs) {
+      return yargs.option('p', {
+        alias: 'port',
+        describe: 'http server binding port'
+      })
+    },
+    handler: function (argv) {
+      generateMetadata()
+    }
+  })
+  .command({
+    command: 'diff', 
+    handler: (opts) => {
+      yargs.showHelp();
+    }
+  })
+  .command({
+    command: 'commit', 
+    handler: (opts) => {
+      yargs.showHelp();
+    }
+  })
+  .command({
+    command: 'checkout', 
+    builder: () => {}, 
+    handler: (opts) => {
+      yargs.showHelp();
+    }
+  })
+  .command({
+    command: 'keys', 
+    builder: function (yargs) {
+      return yargs.option('discovery', {
+        default: false,
+        describe: 'Print Discovery Key'
+      })
+    },
+    handler: (opts) => {
+      opts.createIfMissing = false
+      Dat(dir, opts, function (err, dat) {
+        if (err && err.name === 'MissingError') return console.error('exit:warn', 'No existing archive in this directory.')
+        if (err) return console.error('exit:error', err)
+        console.log(`dat://${dat.key.toString('hex')}`)
+        if (opts.discovery) console.log(`Discovery key: ${dat.archive.discoveryKey.toString('hex')}`)
+      })
+    }
+  })
+  .command({
+    command: 'import', 
+    builder: () => {}, 
+    handler: (opts) => {
+      opts.createIfMissing = false
+      Dat(dir, opts, function (err, dat) {
+        if (err && err.name === 'MissingError') return console.error('exit:warn', 'No existing archive in this directory.')
+        if (err) return console.error('exit:error', err)
+        var schema = {
+          properties: {
+            key: {
+              pattern: /^[a-z0-9]{128}$/,
+              message: 'Use `dat keys export` to get the secret key (128 character hash).',
+              hidden: true,
+              required: true,
+              description: 'dat secret key'
+            }
+          }
+        }
+        prompt.message = ''
+        prompt.start()
+        prompt.get(schema, function (err, data) {
+          if (err) return done(err)
+          var secretKey = data.key
+          if (typeof secretKey === 'string') secretKey = Buffer.from(secretKey, 'hex')
+          // Automatically writes the metadata.ogd file
+          dat.archive.metadata._storage.secretKey.write(0, secretKey, done)
+        })
+
+        function done (err) {
+          if (err) return console.error(err)
+          console.log('Successful import. Dat is now writable.')
+        }
+      })
+    }
+  })
+  .command({
+    command: 'export', 
+    builder: () => {}, 
+    handler: (opts) => {
+      opts.createIfMissing = false
+      Dat(dir, opts, function (err, dat) {
+        if (err && err.name === 'MissingError') return console.error('exit:warn', 'No existing archive in this directory.')
+        if (err) return console.error('exit:error', err)
+        if (!dat.writable) return console.error('Dat must be writable to export.')
+        console.log(dat.archive.metadata.secretKey.toString('hex'))
+      })
+    }
+  })
+  .command({
+    command: 'status', 
+    builder: () => {}, 
+    handler: (opts) => {
+      Dat(dir, opts, function (err, dat) {
+        if (err && err.name === 'MissingError') return console.error('exit:warn', 'No existing archive in this directory.')
+        if (err) return console.error('exit:error', err)
+        var stats = dat.trackStats().get()
+        console.log(stats)
+      })
+    }
+  })
+  .command({
+    command: 'log', 
+    builder: function (yargs) {
+      return yargs.option('live', {
+        default: false,
+        describe: 'View live updates to history.'
+      })
+    },
+    handler: (opts) => {
+      opts._ = [dir]
+      datlog(opts)
+    }
+  })
+  .command({
+    command: 'doctor', 
+    builder: function (yargs) {
+      return yargs.option('live', {
+        default: false,
+        describe: 'View live updates to history.'
+      })
+    },
+    handler: (opts) => {
+      doctor(opts)
+    }
+  })
+  .command({
+    command: 'login', 
+    builder: function (yargs) {
+      return yargs.option('server', {
+        default: false,
+        describe: 'Your Dat registry server (must be registered to login).'
+      })
+    },
+    handler: (opts) => {
+      var schema = {
+        properties: {
+          server: {
+            description: chalk.magenta('Dat registry'),
+            default: opts.server || baseurl,
+            required: true
+          },
+          email: {
+            description: chalk.magenta('Email'),
+            message: 'Email required',
+            required: true
+          },
+          password: {
+            description: chalk.magenta('Password'),
+            message: 'Password required',
+            required: true,
+            hidden: true,
+            replace: '*'
+          }
+        }
+      }
+
+      prompt.override = opts
+      prompt.message = ''
+      prompt.start()
+      prompt.get(schema, function (err, results) {
+        if (err) return exitErr(err)
+        opts.server = results.server
+        makeRequest(results)
+      })
+
+      function makeRequest (user) {
+        var client = DatRegistry(opts)
+        client.login({
+          email: user.email,
+          password: user.password
+        }, function (err, resp, body) {
+          if (err && err.message) return exitErr(err.message)
+          else if (err) return exitErr(err.toString())
+
+          console.log(`
+            Logged you in to ${chalk.green(opts.server)}!
+
+            Now you can publish dats and share:
+            * Run ${chalk.green(`dat publish`)} to publish a dat!
+            * View & Share your dats at ${opts.server}
+          `)
+          process.exit(0)
+        })
+      }
+
+    }
+  })
+  .command({
+    command: 'logout',
+    handler: (opts) => {
+      var client = DatRegistry(opts)
+
+      var whoami = client.whoami()
+      if (!whoami || !whoami.token) return exitErr('Not currently logged in to that server.')
+      client.logout(function (err) {
+        if (err) return exitErr(err)
+        console.log(`Logged out of ${chalk.green(whoami.server)}`)
+        process.exit(0)
+      })
+    }
+  })
+  .command({
+    command: 'register', 
+    builder: function (yargs) {
+      return yargs.option('server', {
+        default: false,
+        describe: 'Your Dat registry server (must be registered to login).'
+      })
+    },
+    handler: (opts) => {
+      var welcome = `
+        Welcome to ${chalk.green(`dat`)} program!
+        Create a new account with a Dat registry.
+
+      `
+      console.log(welcome)
+
+      var schema = {
+        properties: {
+          username: {
+            description: chalk.magenta('Username'),
+            message: 'Username required',
+            required: true
+          },
+          email: {
+            description: chalk.magenta('Email'),
+            message: 'Email required',
+            required: true
+          },
+          password: {
+            description: chalk.magenta('Password'),
+            message: 'Password required',
+            required: true,
+            hidden: true,
+            replace: '*'
+          }
+        }
+      }
+
+      prompt.override = opts
+      prompt.message = ''
+      prompt.start()
+      prompt.get(schema, function (err, results) {
+        if (err) return exitErr(err)
+        opts.server = baseurl
+        makeRequest(results)
+      })
+
+      function makeRequest (user) {
+        var client = DatRegistry(opts)
+
+        client.register({
+          email: user.email,
+          username: user.username,
+          password: user.password
+        }, function (err) {
+          if (err && err.message) return exitErr(err.message)
+          else if (err) return exitErr(err.toString())
+          console.log(`
+            Created account on ${chalk.green(opts.server)}!
+
+            Login to start publishing: ${chalk.green(`dat login`)}
+          `)
+          process.exit(0)
+        })
+      }
+    }
+  })
+  .command({
+    command: 'whoami', 
+    handler: (opts) => {
+      var client = DatRegistry(opts)
+      var login = client.whoami()
+      if (!login || !login.token) {
+        if (!opts.server) return exitErr('No login information found.')
+        return exitErr('No login information found for that server.')
+      }
+      console.log(`
+        Your active Dat registry information:
+
+        ---
+        ${chalk.green(login.server)}
+        Email: ${login.email}
+        Username: ${login.username}
+        ---
+
+        Change your registry by logging in again:
+        ${chalk.dim.green('dat login <registry-url>')}
+      `)
+      process.exit(0)
+    }
+  })
+  .command({
+    command: 'publish', 
+    handler: (opts) => {
+
+      if (!opts.dir) opts.dir = process.cwd()
+      if (opts._[0]) opts.server = opts._[0]
+      if (!opts.server) opts.server = baseurl // nicer error message if not logged in
+
+      var client = DatRegistry(opts)
+      var whoami = client.whoami()
+      if (!whoami || !whoami.token) {
+        var loginErr = `
+          Welcome to ${chalk.green(`dat`)} program!
+          Publish your dats to ${chalk.green(opts.server)}.
+
+          ${chalk.bold('Please login before publishing')}
+          ${chalk.green('dat login')}
+
+          New to ${chalk.green(opts.server)} and need an account?
+          ${chalk.green('dat register')}
+
+          Explore public dats at ${chalk.blue(baseurl + '/explore')}
+        `
+        return exitErr(loginErr)
+      }
+
+      opts.createIfMissing = false // publish must always be a resumed archive
+      Dat(opts.dir, opts, function (err, dat) {
+        if (err && err.name === 'MissingError') return exitErr('No existing dat in this directory. Create a dat before publishing.')
+        else if (err) return exitErr(err)
+
+        dat.joinNetwork() // join network to upload metadata
+
+        var datjson = DatJson(dat.archive, {file: path.join(dat.path, 'dat.json')})
+        datjson.read(publish)
+
+        function publish (_, data) {
+          // ignore datjson.read() err, we'll prompt for name
+
+          // xtend dat.json with opts
+          var datInfo = xtend({
+            name: opts.name,
+            url: 'dat://' + encoding.toStr(dat.key), // force correct url in publish? what about non-dat urls?
+            title: opts.title,
+            description: opts.description
+          }, data)
+          var welcome = `
+            Publishing dat to ${chalk.green(opts.server)}!
+
+          `
+          console.log(welcome)
+
+          if (datInfo.name) return makeRequest(datInfo)
+
+          prompt.message = ''
+          prompt.start()
+          prompt.get({
+            properties: {
+              name: {
+                description: chalk.magenta('dat name'),
+                pattern: /^[a-zA-Z0-9-]+$/,
+                message: `A dat name can only have letters, numbers, or dashes.\n Like ${chalk.bold('cool-cats-12meow')}`,
+                required: true
+              }
+            }
+          }, function (err, results) {
+            if (err) return exitErr(err)
+            datInfo.name = results.name
+            makeRequest(datInfo)
+          })
+        }
+
+        function makeRequest (datInfo) {
+          console.log(`Please wait, '${chalk.bold(datInfo.name)}' will soon be ready for its great unveiling...`)
+          client.dats.create(datInfo, function (err, resp, body) {
+            if (err) {
+              if (err.message) {
+                if (err.message === 'timed out') {
+                  return exitErr(`${chalk.red('\nERROR: ' + opts.server + ' could not connect to your computer.')}
+                  Troubleshoot here: ${chalk.green('https://docs.datproject.org/troubleshooting#networking-issues')}
+                  `)
+                }
+                var str = err.message.trim()
+                if (str === 'jwt expired') return exitErr(`Session expired, please ${chalk.green('dat login')} again`)
+                return exitErr('ERROR: ' + err.message) // node error
+              }
+
+              // server response errors
+              return exitErr('ERROR: ' + err.toString())
+            }
+            if (body.statusCode === 400) return exitErr(new Error(body.message))
+
+            datjson.write(datInfo, function (err) {
+              if (err) return exitErr(err)
+              // TODO: write published url to dat.json (need spec)
+              var msg = `
+
+                We ${body.updated === 1 ? 'updated' : 'published'} your dat!
+                ${chalk.blue.underline(`${opts.server}/${whoami.username}/${datInfo.name}`)}
+              `// TODO: get url back? it'd be better to confirm link than guess username/datname structure
+
+              console.log(msg)
+              if (body.updated === 1) {
+                console.log(`
+
+                  ${chalk.dim.green('Cool fact #21')}
+                  ${opts.server} will live update when you are sharing your dat!
+                  You only need to publish again if your dat link changes.
+                `)
+              } else {
+                console.log(`
+
+                  Remember to use ${chalk.green('dat share')} before sharing.
+                  This will make sure your dat is available.
+                `)
+              }
+              process.exit(0)
+            })
+          })
+        }
+      })
+
+    }
+  })
+  .command({
+    command: 'unpublish', 
+    handler: (opts) => {
+
+      if (opts._[0]) opts.server = opts._[0]
+      if (!opts.dir) opts.dir = process.cwd() // run in dir for `dat unpublish`
+
+      var client = DatRegistry(opts)
+      var whoami = client.whoami()
+      if (!whoami || !whoami.token) {
+        var loginErr = `
+          Welcome to ${chalk.green(`dat`)} program!
+
+          ${chalk.bold('You must login before unpublishing.')}
+          ${chalk.green('dat login')}
+        `
+        return exitErr(loginErr)
+      }
+
+      opts.createIfMissing = false // unpublish dont try to create new one
+      Dat(opts.dir, opts, function (err, dat) {
+        if (err) return exitErr(err)
+        // TODO better error msg for non-existing archive
+        if (!dat.writable) return exitErr('Sorry, you can only publish a dat that you created.')
+
+        var datjson = DatJson(dat.archive, {file: path.join(dat.path, 'dat.json')})
+        datjson.read(function (err, data) {
+          if (err) return exitErr(err)
+          if (!data.name) return exitErr('Try `dat unpublish <name>` with this dat, we are having trouble reading it.')
+          confirm(data.name)
+        })
+      })
+
+      function confirm (name) {
+        console.log(`Unpublishing '${chalk.bold(name)}' from ${chalk.green(whoami.server)}.`)
+        prompt.message = ''
+        prompt.colors = false
+        prompt.start()
+        prompt.get([{
+          name: 'sure',
+          description: 'Are you sure? This cannot be undone. [y/n]',
+          pattern: /^[a-zA-Z\s-]+$/,
+          message: '',
+          required: true
+        }], function (err, results) {
+          if (err) return console.log(err.message)
+          if (results.sure === 'yes' || results.sure === 'y') makeRequest(name)
+          else exitErr('Cancelled.')
+        })
+      }
+
+      function makeRequest (name) {
+        client.dats.delete({name: name}, function (err, resp, body) {
+          if (err && err.message) exitErr(err.message)
+          else if (err) exitErr(err.toString())
+          if (body.statusCode === 400) return exitErr(new Error(body.message))
+          console.log(`Removed your dat from ${whoami.server}`)
+          process.exit(0)
+        })
+      }
+    }
+  })
+  .command(
+    '*', 
+    '', 
+    () => {}, 
+    (opts) => {
+      yargs.showHelp();
+    }
+  )
+  .help()
+  .argv
+
+
+function exitErr (err) {
+  console.error(err)
+  process.exit(1)
+}
+
+

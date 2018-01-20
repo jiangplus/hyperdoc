@@ -1,0 +1,38 @@
+{
+  "name": "hyperdoc",
+  "version": "0.1.0",
+  "description": "distributed content publishing",
+  "main": "bin/hyperdoc",
+  "bin": {
+    "hyperdoc": "bin/hyperdoc"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jiangplus/hyperdoc.git"
+  },
+  "keywords": [
+    "dat",
+    "publishing"
+  ],
+  "author": "jiangplus",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/jiangplus/hyperdoc/issues"
+  },
+  "homepage": "https://github.com/jiangplus/hyperdoc#readme",
+  "dependencies": {
+    "chalk": "^2.3.0",
+    "dat-doctor": "^1.3.1",
+    "dat-json": "^1.0.1",
+    "dat-log": "^1.1.1",
+    "dat-node": "^3.5.6",
+    "dat-registry": "^4.0.0",
+    "express": "^4.16.2",
+    "js-yaml": "^3.10.0",
+    "prompt": "^1.0.0",
+    "yargs": "^10.0.3"
+  }
+}
