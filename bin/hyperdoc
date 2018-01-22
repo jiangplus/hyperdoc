@@ -70,7 +70,7 @@ function generateMetadata (cb) {
   fs.readdir(path.join(process.cwd(), '_posts'), function(err, items) {
     if (err) throw err
 
-    let posts = items.map((key) => {
+    let posts = items.filter(key => key.match(/\.md$/)).map((key) => {
       let filename = path.join(path.join(process.cwd(), '_posts', key))
       let filekey = key.replace(/\.[^/.]+$/, "")
       let content = fs.readFileSync(filename, 'utf8')
@@ -159,7 +159,7 @@ let argv = yargs
     },
     handler: function (argv) {
       Dat(dir, {errorIfExists: true}, function (err, dat) {
-        if (err && err.name === 'ExistsError') return console.error('\nArchive already exists.\nYou can use `dat sync` to update.')
+        if (err && err.name === 'ExistsError') return console.error('\nArchive already exists.\nYou can use `hyperdoc sync` to update.')
         if (err) throw err
 
 
@@ -230,6 +230,21 @@ let argv = yargs
             }
             if (!fs.existsSync('_posts')) {
                 fs.mkdirSync('_posts')
+            }
+
+            let date = new Date()
+            let dateString = date.getFullYear() + '-' + (date.getMonth() + 1).toString().padStart(2, '0')  + '-' + date.getDate().toString().padStart(2, '0')
+            
+            let firstBlogName = path.join('_posts', dateString + '-first-blog.md')
+            if (!fs.existsSync(firstBlogName)) {
+                fs.writeFileSync(firstBlogName, `
+---
+title: First Blog
+date: ${dateString}
+---
+
+My first blog.
+                  `)
             }
           }
 
@@ -430,10 +445,10 @@ let argv = yargs
           properties: {
             key: {
               pattern: /^[a-z0-9]{128}$/,
-              message: 'Use `dat keys export` to get the secret key (128 character hash).',
+              message: 'Use `hyperdoc keys export` to get the secret key (128 character hash).',
               hidden: true,
               required: true,
-              description: 'dat secret key'
+              description: 'hyperdoc secret key'
             }
           }
         }
@@ -683,14 +698,14 @@ let argv = yargs
       var whoami = client.whoami()
       if (!whoami || !whoami.token) {
         var loginErr = `
-          Welcome to ${chalk.green(`dat`)} program!
+          Welcome to ${chalk.green(`hyperdoc`)} program!
           Publish your dats to ${chalk.green(opts.server)}.
 
           ${chalk.bold('Please login before publishing')}
-          ${chalk.green('dat login')}
+          ${chalk.green('hyperdoc login')}
 
           New to ${chalk.green(opts.server)} and need an account?
-          ${chalk.green('dat register')}
+          ${chalk.green('hyperdoc register')}
 
           Explore public dats at ${chalk.blue(baseurl + '/explore')}
         `
