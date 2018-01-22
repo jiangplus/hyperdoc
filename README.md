@@ -1,8 +1,8 @@
 # Hyperdoc
 
-A distributed documentation and blogging tool powered by the [Dat protocol](https://www.datproject.org/).
+A distributed blogging and documentation tool powered by the [Dat](https://www.datproject.org/) protocol.
 
-It inherits most functionalities from [the Dat client](https://github.com/datproject/dat). To init a blog, just add `--type=blog` option when creating the Dat, which will generate extra files and metadata for blogging. In the same way, you could add `--type=doc` option to generate a documentation repository.
+It extends the functionality of the [Dat client](https://github.com/datproject/dat), and allows you to create a blog or wiki that could be synchronized over the p2p network and served by webbrowser.
 
 ## Installation
 
@@ -14,7 +14,11 @@ Create your blog:
 
 > hyperdoc create --type=blog
 
-Edit the blog post in the `_posts` directory with markdown format with name like `_posts/2018-01-01-first-blog.md`
+Edit the blog post in the `_posts` directory in markdown format with name like `_posts/2018-01-01-first-blog.md`
+
+Commit new files to dat:
+
+> hyperdoc commit
 
 Generate index.json for the blog:
 
@@ -33,6 +37,10 @@ Create your doc app:
 > hyperdoc create --type=doc
 
 Just edit any markdowns in the repository, and `README.md` would be the home page.
+
+Commit new files to dat:
+
+> hyperdoc commit
 
 Serve the doc:
 

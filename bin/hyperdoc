@@ -72,9 +72,13 @@ function generateMetadata (cb) {
 
     let posts = items.map((key) => {
       let filename = path.join(path.join(process.cwd(), '_posts', key))
+      let filekey = key.replace(/\.[^/.]+$/, "")
       let content = fs.readFileSync(filename, 'utf8')
       let meta = yaml.load(content.split('---')[1])
-      let line = {title: meta.title, date: new Date(meta.date).toDateString(), key: key.replace(/\.[^/.]+$/, "")}
+      console.log(content.split('---')[1])
+      console.log(meta)
+      console.log(meta.date)
+      let line = {title: meta && meta.title || filekey, date: meta && meta.date && new Date(meta.date).toDateString() || "", key: key.replace(/\.[^/.]+$/, "")}
       return line
     })
 
@@ -248,7 +252,6 @@ let argv = yargs
   .command({
     command: 'clone <key>',
     handler: function (argv) {
-
       createDir(argv.key, runDat)
 
       function createDir (key, cb) {
@@ -355,7 +358,7 @@ let argv = yargs
     }
   })
   .command({
-    command: 'indexing',
+    command: 'index',
     builder: function (yargs) {
       return yargs.option('p', {
         alias: 'port',
@@ -375,7 +378,19 @@ let argv = yargs
   .command({
     command: 'commit', 
     handler: (opts) => {
-      yargs.showHelp();
+      Dat(dir, function (err, dat) {
+        if (err) throw err
+
+        dat.importFiles(function (err) {
+          if (err) throw err
+
+          dat.archive.readdir('/', function (err, list) {
+            if (err) throw err
+            console.log('files:')
+            console.log(list)
+          })
+        })
+      })
     }
   })
   .command({
